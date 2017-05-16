@@ -1,0 +1,20 @@
+galaxy_info:
+  author: Kenneth Evensen
+  description: This self-contained role allows for the manipulation of resources in an OpenShift cluster.
+  company: Red Hat, Inc.
+
+  license: license (GPLv3)
+
+  min_ansible_version: 2.3
+
+  platforms:
+  - name: EL
+    versions:
+    - 7
+
+  galaxy_tags:
+  - OpenShift
+  - OCP
+  - Kubernetes
+
+dependencies: []

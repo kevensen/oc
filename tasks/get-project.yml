@@ -1,0 +1,8 @@
+---
+- name: Get {{ project_name}} Namespace
+  oc:
+    state: present
+    inline:
+      kind: Project
+      api: v1
+      name: "{{ project_name }}"
