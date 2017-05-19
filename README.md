@@ -1,38 +1,54 @@
 OC
 =========
 
-A brief description of the role goes here.
+This role provides one library for the purposes of creating, modifying and/or deleting objects in the OpenShift Container Platform.  The oc.py library assumes that the target host has it's Kube config at /root/.kube/config.  This, of course, can be set with each task invocation.
 
 Requirements
 ------------
 
-Any pre-requisites that may not be covered by Ansible itself or the role should be mentioned here. For instance, if the role uses the EC2 module, it may be a good idea to mention in this section that the boto package is required.
+Ansible 2.3
 
 Role Variables
 --------------
 
-A description of the settable variables for this role should go here, including any variables that are in defaults/main.yml, vars/main.yml, and any variables that can/should be set via parameters to the role. Any variables that are read from other roles and/or the global scope (ie. hostvars, group vars, etc.) should be mentioned here as well.
+No specific role variables.
 
 Dependencies
 ------------
 
-A list of other roles hosted on Galaxy should go here, plus any details in regards to parameters that may need to be set for other roles, or variables that are used from other roles.
+No external dependencies.
 
 Example Playbook
 ----------------
 
-Including an example of how to use your role (for instance, with variables passed in as parameters) is always nice for users too:
-
-    - hosts: servers
-      roles:
-         - { role: username.rolename, x: 42 }
+This is how a project might be deleted.
+```
+---
+# file: oc.yml
+- hosts: oc
+  roles:
+  - role: kevensen.oc
+  tasks:
+  - name: Delete "{{ project_name }}" Project
+    oc:
+      state: absent
+      name: "{{ project_name }}"
+      kind: project
+    register: result
+  - debug:
+      var: result
+  any_errors_fatal: true
+  vars:
+    ansible_become: true
+    project_name: ansibletest
+```
 
 License
 -------
 
-BSD
+GPLv3.
 
 Author Information
 ------------------
 
-An optional section for the role authors to include contact information, or a website (HTML is not allowed).
+Ken Evensen is a Solutions Architect with Red Hat.
