@@ -17,36 +17,6 @@
 # You should have received a copy of the GNU General Public License
 # along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
 
-ANSIBLE_METADATA = {'metadata_version': '1.0',
-                    'status': ['preview'],
-                    'supported_by': 'community'}
-
-
-DOCUMENTATION = """
-module: oc
-author:
-- "Kenneth D. Evensen (@kevensen)"
-short_description: Manage OpenShift Resources
-description:
-- This module allows management of resources in an OpenShift cluster.  This module gets executed on an OpenShift master and uses the system:admin's .kubeconfig file typically located at /root/.kube/config.  By default, this module uses the first (often the only) cluster entry under the "clusters" entry.  Thus, no API endpoint is required.
-
-This is a self contained module and has no external dependencies.
-version_added: "2.3"
-options:
-  kind:
-    required: true
-    description:
-      - The kind of the resource upon which to take action.
-"""
-
-EXAMPLES = """
-
-"""
-
-RETURN = '''
-
-...
-'''
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils.basic import BOOLEANS_TRUE
@@ -59,6 +29,125 @@ import json
 import os
 import requests
 import yaml
+
+ANSIBLE_METADATA = {'metadata_version': '1.0',
+                    'status': ['preview'],
+                    'supported_by': 'community'}
+
+
+DOCUMENTATION = """
+module: oc
+author:
+- "Kenneth D. Evensen (@kevensen)"
+short_description: Manage OpenShift Resources
+description:
+- This module allows management of resources in an OpenShift cluster.
+This module gets executed on an OpenShift master and uses the system:admin's
+.kubeconfig file typically located at /root/.kube/config.  By default, this
+module uses the first (often the only) cluster entry under the "clusters"
+entry. Thus, no API endpoint is required.
+
+This is a self contained module and has no external dependencies.
+version_added: "2.3"
+options:
+  kind:
+    required: true
+    description:
+      - The kind of the resource upon which to take action.
+  name:
+    required: false
+    description:
+      - The name of the resource on which to take action.
+  namespace:
+    required: false
+    description:
+      - The namespace of the resource upon which to take action.
+  inline:
+    required: false
+    description:
+    - The inline definition of the resource.  This is mutually exclusive with
+    name, namespace and kind.
+  uniqueify:
+    required: false
+    default: true
+    description:
+    - The returned resource definition will have the creationTimestamp,
+    resourceVersion and uid removed.
+  host:
+    required: false
+    description:
+    - In the case that the ansible target is not the API endpoint, this value
+    can be specified to match a host in the Kube config.
+  path:
+    required: false
+    default: /root/.kube/config
+    description:
+    - The path to the kubeconfig file on the host.
+  state:
+    required: true
+    choices:
+    - present
+    - absent
+    description:
+    - If the state is present, and the resource doesn't exist, it shall
+    be created.  Therefore, an inline definition must be provided.  If
+    the state is present and the resource exists, the definition will be
+    updated, again using an inline definition.  If the state is ansent,
+    the resource will be deleted if it exists.
+
+"""
+
+EXAMPLES = """
+
+- name: Create project
+  oc:
+    state: present
+    inline:
+      kind: ProjectRequest
+      metadata:
+        name: ansibletestproject
+      displayName: Ansible Test Project
+      description: This project was created using Ansible
+
+- name: Delete a service
+  oc:
+    state: absent
+    name: myservice
+    namespace: mynamespace
+    kind: Service
+
+- name: Add project role Admin to a user
+  oc:
+    state: present
+    inline:
+      kind: RoleBinding
+      metadata:
+        name: admin
+        namespace: mynamespace
+      roleRef:
+        name: admin
+      userNames:
+      - "myuser"
+
+"""
+
+RETURN = '''
+result:
+  description: The resource that was created or changed.  In the case of
+  a deletion, this is the response from the delete request.
+  returned: success
+  type: string
+uniquified:
+  description: Whether or not the returned object has been uniquified.
+  returned: success
+  type: boolean
+url:
+  description: The URL to the requested resource.
+  returned: success
+  type: string
+...
+'''
+
 
 class KubeConfig(object):
     def __init__(self, path, host, ansible):
@@ -73,7 +162,9 @@ class KubeConfig(object):
                     self.cluster = config['clusters'][0]
                     self.host = self.cluster['cluster']['server']
                 else:
-                    self.cluster = self.parse_cluster_data(config['clusters'], host)
+                    self.cluster = self.parse_cluster_data(
+                                                    config['clusters'],
+                                                    host)
 
                 self.api_version = self.cluster['cluster']['api-version']
                 self.ca = self.cluster['cluster']['certificate-authority-data']
@@ -89,13 +180,16 @@ class KubeConfig(object):
                 self.write_file(self.client_key_file, self.client_key)
                 self.write_file(self.ca_file, self.ca)
             except yaml.YAMLError as exc:
-                self.ansible.fail_json(msg='Unable to parse config file %s' % path)
+                self.ansible.fail_json(msg='Unable to parse config file %s'
+                                       % path)
 
     def parse_cluster_data(self, clusters, host):
         for cluster in clusters:
             if host == cluster['cluster']['server']:
                 return cluster
-        self.ansible.fail_json(msg='Unable to find cluster %s in kube config file' % host)
+        self.ansible.fail_json(
+                        msg='Unable to find cluster %s in kube config file'
+                        % host)
 
     def parse_user_data(self, users):
         for user in users:
@@ -104,7 +198,9 @@ class KubeConfig(object):
                 self.client_cert = user['user']['client-certificate-data']
                 self.client_key = user['user']['client-key-data']
                 return
-        self.ansible.fail_json(msg='Can not parse client certificate data out of config file %s.' % self.path)
+        self.ansible.fail_json(
+            msg='Can not parse client certificate data out of config file %s.'
+            % self.path)
 
     def write_file(self, file_name, cert_string):
         self.ansible.log("Writing temporary file %s" % file_name)
@@ -117,6 +213,7 @@ class KubeConfig(object):
         os.remove(self.client_cert_file)
         os.remove(self.ca_file)
 
+
 class OC(object):
     def __init__(self, kube_config, module):
         self.apis = ['api', 'oapi']
@@ -127,9 +224,10 @@ class OC(object):
     def build_facts(self):
         for api in self.apis:
             url = self.kube_config.host + "/" + api + "/v1"
-            response = requests.get(url, cert=(self.kube_config.client_cert_file,
-                                               self.kube_config.client_key_file),
-                                         verify=self.kube_config.ca_file).json()
+            response = requests.get(url,
+                                    cert=(self.kube_config.client_cert_file,
+                                          self.kube_config.client_key_file),
+                                    verify=self.kube_config.ca_file).json()
             for resource in response['resources']:
                 self.kinds[resource['kind']] = {'kind': resource['kind'],
                                                 'name': resource['name'].split('/')[0],
@@ -139,150 +237,212 @@ class OC(object):
                                                 'baseurl': url
                                                 }
 
-    def build_url(self, kind, name = None, namespace = None):
-        url = self.kinds[kind]['baseurl']
-        if self.kinds[kind]['namespaced'] == True:
+
+class Resource(object):
+    def __init__(self, kube_config, module, kinds,
+                 kind, namespace=None, name=None):
+        self.kube_config = kube_config
+        self.module = module
+        self.kinds = kinds
+        self.kind = kind
+        self.namespace = namespace
+        self.name = name
+
+    def url(self):
+        url = self.kinds[self.kind]['baseurl']
+        if self.kinds[self.kind]['namespaced'] is True:
             url += '/namespaces/'
-            if namespace is None:
-                self.module.fail_json(msg='Kind %s requires a namespace.  None provided' % kind)
-            url += namespace
+            if self.namespace is None:
+                self.module.fail_json(msg='Kind %s requires a namespace.  \
+                                      None provided' % self.kind)
+            url += self.namespace
 
         url += '/'
-        url += self.kinds[kind]['name']
+        url += self.kinds[self.kind]['name']
 
-        if name is not None:
+        if self.name is not None:
             url += '/'
-            url += name
-
+            url += self.name
+        self.module.log(msg="URL for request is %s" % url)
         return url
 
-    def get_resource(self, kind, namespace = None, name = None, uniqueify = True):
-        url = ''
-        if name is not None:
-            url = self.build_url(kind, namespace=namespace, name=name)
-        elif namespace is not None:
-            url = self.build_url(kind, namespace=namespace)
-        else:
-            url = self.build_url(kind)
+    def fact_name(self):
+        fact_name = self.kinds[self.kind]['name']
+        fact_name += '-'
+        if self.kinds[self.kind]['namespaced'] is True:
+            if self.namespace is None:
+                self.module.fail_json(msg='Kind %s requires a namespace.  \
+                                      None provided' % self.kind)
+            fact_name += self.namespace
+            fact_name += '-'
+        fact_name += self.name
+        return fact_name
 
+    def merge(self, source, destination, changed):
+        for key, value in source.items():
+            if isinstance(value, dict):
+                # get node or create one
+                node = destination.setdefault(key, {})
+                _, changed = self.merge(value, node, changed)
+            elif isinstance(value, list) and key in destination.keys():
+                if set(destination[key]) != set(destination[key] +
+                                                source[key]):
+                    destination[key] = list(set(destination[key] +
+                                            source[key]))
+                    changed = True
+            elif (key not in destination.keys() or
+                  destination[key] != source[key]):
+                destination[key] = value
+                changed = True
+        return destination, changed
+
+    def get(self, uniqueify=True):
         resource = None
-        response = requests.get(url, cert=(self.kube_config.client_cert_file,
-                                           self.kube_config.client_key_file),
-                                     verify=self.kube_config.ca_file)
+        response = requests.get(self.url(),
+                                cert=(self.kube_config.client_cert_file,
+                                      self.kube_config.client_key_file),
+                                verify=self.kube_config.ca_file)
 
         if response.json() is not None and response.json() != {}:
-            if response.json()['kind'] == 'Status' and response.json()['metadata'] == {}:
+            if (response.json()['kind'] == 'Status' and
+                    response.json()['metadata'] == {}):
                 return None
 
         if response.status_code == 404:
             return None
+
+        resource = response.json()
         if uniqueify:
-            return self.uniqueify(response.json())
+            try:
+                del resource['metadata']['creationTimestamp']
+                del resource['metadata']['resourceVersion']
+                del resource['metadata']['uid']
+            except KeyError:
+                pass
 
-        return response.json()
+        return resource
 
-    def create_resource(self, kind, namespace, name, inline):
-        url = ''
+    def exists(self):
+        if self.get() is not None:
+            return True
+        return False
+
+    def create(self, inline):
         changed = False
 
-        if namespace is not None:
-            url = self.build_url(kind, namespace=namespace)
-        else:
-            url = self.build_url(kind)
+        inline['kind'] = self.kind
+        inline['apiVersion'] = self.kinds[self.kind]['version']
 
-        self.module.log(msg="URL for create request is %s" % url)
+        self.module.log(
+            msg="JSON body for create request is %s"
+            % json.dumps(inline))
 
-        inline['kind'] = kind
-        inline['apiVersion'] = self.kinds[kind]['version']
+        response = requests.post(self.url(),
+                                 data=json.dumps(inline),
+                                 cert=(self.kube_config.client_cert_file,
+                                       self.kube_config.client_key_file),
+                                 verify=self.kube_config.ca_file)
 
-        self.module.log(msg="JSON body for create request is %s" % json.dumps(inline))
-
-        response = requests.post(url, data=json.dumps(inline),
-                                      cert=(self.kube_config.client_cert_file,
-                                            self.kube_config.client_key_file),
-                                      verify=self.kube_config.ca_file)
-
-        self.module.log(msg="Response for create request is %s" % str(response.json()))
+        self.module.log(
+            msg="Response for create request is %s"
+            % str(response.json()))
 
         if response.status_code == 404:
             return None, changed
         elif response.status_code == 409:
             return response.json(), changed
         elif response.status_code >= 300:
-            self.module.fail_json(msg='Failed to create resource %s in namespace %s with msg %s' % (name, namespace, response.reason))
+            self.module.fail_json(
+                msg='Failed to create resource %s in namespace %s with msg %s'
+                % (name, namespace, response.reason))
         else:
             changed = True
             return response.json(), changed
 
-    def replace_resource(self, kind, namespace, name, inline):
-        resource = self.get_resource(kind=kind,
-                                     namespace=namespace,
-                                     name=name,
-                                     uniqueify=True)
-        return resource, False
-
-    def delete_resource(self, kind, namespace = None, name = None):
-        url = ''
+    def replace(self, inline):
         changed = False
-        if namespace is not None:
-            url = self.build_url(kind, namespace=namespace, name=name)
-        else:
-            url = self.build_url(kind, name=name)
+        resource = self.get(uniqueify=False)
+        self.module.log(
+            msg="Found existing resource for update request: %s"
+            % str(resource))
+        new_resource, changed = self.merge(inline, resource, changed)
 
-        response = requests.delete(url, cert=(self.kube_config.client_cert_file,
-                                           self.kube_config.client_key_file),
-                                     verify=self.kube_config.ca_file)
+        if changed:
+            self.module.log(
+                msg="JSON body for update request is %s"
+                % json.dumps(new_resource))
+            response = requests.put(self.url(),
+                                    data=json.dumps(new_resource),
+                                    cert=(self.kube_config.client_cert_file,
+                                          self.kube_config.client_key_file),
+                                    verify=self.kube_config.ca_file)
+            self.module.log(
+                msg="Response for update request is %s"
+                % str(response.json()))
+
+            if response.status_code >= 300:
+                self.module.fail_json(
+                    msg='Failed to update resource %s in \
+                    namespace %s with msg %s'
+                    % (name, namespace, response.reason))
+
+            return response.json(), changed
+        return resource, changed
+
+    def delete(self):
+
+        changed = False
+
+        response = requests.delete(self.url(),
+                                   cert=(self.kube_config.client_cert_file,
+                                         self.kube_config.client_key_file),
+                                   verify=self.kube_config.ca_file)
+
+        self.module.log(
+            msg="Response for delete request is %s"
+            % str(response.json()))
 
         if response.status_code == 404:
             return None, changed
         elif response.status_code >= 300:
-            self.module.fail_json(msg='Failed to delete resource %s in namespace %s with msg %s' % (name, namespace, response.msg))
+            self.module.fail_json(msg='Failed to delete resource %s in \
+                                  namespace %s with msg %s'
+                                  % (name, namespace, response.msg))
         else:
             changed = True
             return response.json(), changed
 
-    def uniqueify(self, resource):
-        try:
-            del resource['metadata']['creationTimestamp']
-            del resource['metadata']['resourceVersion']
-            del resource['metadata']['uid']
-        except KeyError:
-            pass
-        return resource
 
 def main():
 
     module = AnsibleModule(
         argument_spec=dict(
-            force=dict(default=False, type='bool'),
             host=dict(required=False, type='str'),
             inline=dict(required=False, type='dict'),
             kind=dict(required=False, type='str'),
             name=dict(required=False, type='str'),
             namespace=dict(required=False, type='str'),
 
-            path=dict(required=False, default='/root/.kube/config', type='str'),
+            path=dict(required=False,
+                      default='/root/.kube/config',
+                      type='str'),
             state=dict(required=True,
                        choices=['present', 'absent', 'get']),
             uniqueify=dict(default=True, type='bool')
         ),
         mutually_exclusive=(['name', 'inline'],
-                            ['namespace', 'inline'],
-        ),
+                            ['namespace', 'inline']),
         required_if=([['state', 'absent', ['kind']],
-                      ['state', 'present',['inline']]]
-        ),
+                     ['state', 'present', ['inline']]]),
         required_one_of=([['kind', 'inline']]),
         no_log=False,
-        supports_check_mode=True
+        supports_check_mode=False
     )
     kind = None
     inline = None
     name = None
     namespace = None
 
-    check_mode = module.check_mode
-    force = module.params['force']
     host = module.params['host']
     inline = module.params['inline']
     path = module.params['path']
@@ -305,36 +465,29 @@ def main():
             pass
 
     facts = {}
-    resource = None
+    result = None
     kube_config = KubeConfig(path, host, module)
     oc = OC(kube_config, module)
     oc.build_facts()
     changed = False
 
-    resource = oc.get_resource(kind=kind,
-                               namespace=namespace,
-                               name=name,
-                               uniqueify=uniqueify)
+    resource = Resource(kube_config=kube_config,
+                        module=module,
+                        kinds=oc.kinds,
+                        kind=kind,
+                        namespace=namespace,
+                        name=name)
 
-    if state == 'present' and resource is None:
-        resource, changed = oc.create_resource(kind=kind,
-                                               namespace=namespace,
-                                               name=name,
-                                               inline=inline)
-    elif state == 'present' and resource is not None:
-        resource, changed = oc.replace_resource(kind=kind,
-                                                namespace=namespace,
-                                                name=name,
-                                                inline=inline)
-    elif state == 'absent' and resource is not None:
-        resource, changed = oc.delete_resource(kind=kind,
-                                               namespace=namespace,
-                                               name=name)
-    facts['oc'] = {'resources': resource,
-                   'url': oc.build_url(kind=kind,
-                                       namespace=namespace,
-                                       name=name),
-                   'uniquified': uniqueify}
+    if state == 'present' and not resource.exists():
+        result, changed = resource.create(inline=inline)
+    elif state == 'present' and resource.exists():
+        result, changed = resource.replace(inline=inline)
+    elif state == 'absent' and resource.exists():
+        result, changed = resource.delete()
+
+    facts['oc-' + resource.fact_name()] = {'result': result,
+                                           'url': resource.url(),
+                                           'uniquified': uniqueify}
     kube_config.clean()
     module.exit_json(changed=changed, ansible_facts=facts)
 
