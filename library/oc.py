@@ -337,7 +337,8 @@ class Resource(object):
             msg="JSON body for create request is %s"
             % json.dumps(inline))
 
-        response = requests.post(self.url(),
+        url = self.url()[:self.url().rfind('/')]
+        response = requests.post(url,
                                  data=json.dumps(inline),
                                  cert=(self.kube_config.client_cert_file,
                                        self.kube_config.client_key_file),
@@ -353,8 +354,9 @@ class Resource(object):
             return response.json(), changed
         elif response.status_code >= 300:
             self.module.fail_json(
-                msg='Failed to create resource %s in namespace %s with msg %s'
-                % (name, namespace, response.reason))
+                msg='Failed to create resource %s in \
+                namespace %s with msg %s' % (self.name,
+                self.namespace, response.reason))
         else:
             changed = True
             return response.json(), changed
