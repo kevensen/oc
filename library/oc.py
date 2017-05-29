@@ -19,14 +19,11 @@
 
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible.module_utils.basic import BOOLEANS_TRUE
 from ansible.module_utils.pycompat24 import get_exception
-from itertools import chain
-from collections import defaultdict
-import ast
 import base64
 import json
 import os
+import re
 import requests
 import yaml
 
@@ -90,10 +87,9 @@ options:
     - absent
     description:
     - If the state is present, and the resource doesn't exist, it shall
-    be created.  Therefore, an inline definition must be provided.  If
-    the state is present and the resource exists, the definition will be
-    updated, again using an inline definition.  If the state is ansent,
-    the resource will be deleted if it exists.
+    be created.  If the state is present and the resource exists, the
+    definition will be updated, again using an inline definition.  If the
+    state is absent, the resource will be deleted if it exists.
 
 """
 
@@ -149,6 +145,7 @@ url:
 '''
 
 
+
 class KubeConfig(object):
     def __init__(self, path, host, ansible):
         yml = []
@@ -165,8 +162,10 @@ class KubeConfig(object):
                     self.cluster = self.parse_cluster_data(
                                                     config['clusters'],
                                                     host)
-
-                self.api_version = self.cluster['cluster']['api-version']
+                if 'api-version' in self.cluster['cluster'].keys():
+                    self.api_version = self.cluster['cluster']['api-version']
+                else:
+                    self.api_version = config['apiVersion']
                 self.ca = self.cluster['cluster']['certificate-authority-data']
                 self.server = self.cluster['cluster']['server']
                 self.name = self.cluster['name']
@@ -229,13 +228,14 @@ class OC(object):
                                           self.kube_config.client_key_file),
                                     verify=self.kube_config.ca_file).json()
             for resource in response['resources']:
-                self.kinds[resource['kind']] = {'kind': resource['kind'],
-                                                'name': resource['name'].split('/')[0],
-                                                'namespaced': resource['namespaced'],
-                                                'api': api,
-                                                'version': 'v1',
-                                                'baseurl': url
-                                                }
+                if not 'generated' in resource['name']:
+                    self.kinds[resource['kind']] = {'kind': resource['kind'],
+                                                    'name': resource['name'].split('/')[0],
+                                                    'namespaced': resource['namespaced'],
+                                                    'api': api,
+                                                    'version': 'v1',
+                                                    'baseurl': url
+                                                    }
 
 
 class Resource(object):
@@ -266,42 +266,49 @@ class Resource(object):
         self.module.log(msg="URL for request is %s" % url)
         return url
 
-    def fact_name(self):
-        fact_name = self.kinds[self.kind]['name']
-        fact_name += '-'
-        if self.kinds[self.kind]['namespaced'] is True:
-            if self.namespace is None:
-                self.module.fail_json(msg='Kind %s requires a namespace.  \
-                                      None provided' % self.kind)
-            fact_name += self.namespace
-            fact_name += '-'
-        fact_name += self.name
-        return fact_name
-
     def merge(self, source, destination, changed):
+
         for key, value in source.items():
             if isinstance(value, dict):
                 # get node or create one
-                node = destination.setdefault(key, {})
-                _, changed = self.merge(value, node, changed)
+                try:
+                    node = destination.setdefault(key, {})
+                except AttributeError:
+                    node = {}
+                finally:
+                    _, changed = self.merge(value, node, changed)
+
             elif isinstance(value, list) and key in destination.keys():
-                if set(destination[key]) != set(destination[key] +
-                                                source[key]):
-                    destination[key] = list(set(destination[key] +
-                                            source[key]))
+                try:
+                    if set(destination[key]) != set(destination[key] +
+                                                    source[key]):
+                        destination[key] = list(set(destination[key] +
+                                                    source[key]))
+                        changed = True
+                except TypeError:
+                    destination[key] = source[key]
                     changed = True
+
             elif (key not in destination.keys() or
                   destination[key] != source[key]):
                 destination[key] = value
                 changed = True
         return destination, changed
 
-    def get(self, uniqueify=True):
+    def get(self, fieldSelector='', uniqueify=True):
         resource = None
-        response = requests.get(self.url(),
-                                cert=(self.kube_config.client_cert_file,
-                                      self.kube_config.client_key_file),
-                                verify=self.kube_config.ca_file)
+        response = None
+        if fieldSelector is not '':
+            response = requests.get(self.url(),
+                                    params={'fieldSelector': fieldSelector},
+                                    cert=(self.kube_config.client_cert_file,
+                                          self.kube_config.client_key_file),
+                                    verify=self.kube_config.ca_file)
+        else:
+            response = requests.get(self.url(),
+                                    cert=(self.kube_config.client_cert_file,
+                                          self.kube_config.client_key_file),
+                                    verify=self.kube_config.ca_file)
 
         if response.json() is not None and response.json() != {}:
             if (response.json()['kind'] == 'Status' and
@@ -317,6 +324,16 @@ class Resource(object):
                 del resource['metadata']['creationTimestamp']
                 del resource['metadata']['resourceVersion']
                 del resource['metadata']['uid']
+            except KeyError:
+                pass
+
+            try:
+                del resource['spec']['clusterIP']
+            except KeyError:
+                pass
+
+            try:
+                del resource['status']['ingress']
             except KeyError:
                 pass
 
@@ -386,7 +403,7 @@ class Resource(object):
                 self.module.fail_json(
                     msg='Failed to update resource %s in \
                     namespace %s with msg %s'
-                    % (name, namespace, response.reason))
+                    % (self.name, self.namespace, response.reason))
 
             return response.json(), changed
         return resource, changed
@@ -414,6 +431,25 @@ class Resource(object):
             changed = True
             return response.json(), changed
 
+def clean_deployment_config(module, inline, namespace):
+
+    for container in inline['spec']['template']['spec']['containers']:
+        container['image'] = ' '
+
+    for trigger in inline['spec']['triggers']:
+        if 'ImageChange' in trigger['type']:
+            try:
+                del trigger['imageChangeParams']['lastTriggeredImage']
+            except KeyError:
+                pass
+            try:
+                if trigger['imageChangeParams']['from']['namespace'] in namespace:
+                    trigger['imageChangeParams']['from']['namespace'] = namespace
+            except KeyError:
+                pass
+
+    return inline
+
 
 def main():
 
@@ -428,14 +464,13 @@ def main():
             path=dict(required=False,
                       default='/root/.kube/config',
                       type='str'),
+            fieldSelector=dict(required=False, default='', type='str'),
             state=dict(required=True,
-                       choices=['present', 'absent', 'get']),
+                       choices=['present', 'absent']),
             uniqueify=dict(default=True, type='bool')
         ),
-        mutually_exclusive=(['name', 'inline'],
-                            ['namespace', 'inline']),
-        required_if=([['state', 'absent', ['kind']],
-                     ['state', 'present', ['inline']]]),
+        mutually_exclusive=(['kind', 'inline']),
+        required_if=([['state', 'absent', ['kind']]]),
         required_one_of=([['kind', 'inline']]),
         no_log=False,
         supports_check_mode=False
@@ -450,28 +485,36 @@ def main():
     path = module.params['path']
     state = module.params['state']
     uniqueify = module.params['uniqueify']
+    kind = module.params['kind']
+    fieldSelector = module.params['fieldSelector']
+    name = module.params['name']
+    namespace = module.params['namespace']
 
-    if inline is None:
-        kind = module.params['kind'].capitalize()
-        name = module.params['name']
-        namespace = module.params['namespace']
-    else:
+    if inline is not None:
         kind = inline['kind']
         try:
-            name = inline['metadata']['name']
-        except KeyError:
-            pass
-        try:
-            namespace = inline['metadata']['namespace']
+            if name is None:
+                name = inline['metadata']['name']
+            else:
+                inline['metadata']['name'] = name
         except KeyError:
             pass
 
-    facts = {}
+        try:
+            if namespace is None:
+                namespace = inline['metadata']['namespace']
+            else:
+                inline['metadata']['namespace'] = namespace
+        except KeyError:
+            pass
+
+
     result = None
     kube_config = KubeConfig(path, host, module)
     oc = OC(kube_config, module)
     oc.build_facts()
     changed = False
+    method = ''
 
     resource = Resource(kube_config=kube_config,
                         module=module,
@@ -479,17 +522,30 @@ def main():
                         kind=kind,
                         namespace=namespace,
                         name=name)
+    if inline is not None and "DeploymentConfig" in kind:
+        inline = clean_deployment_config(module, inline, namespace)
 
-    if state == 'present' and not resource.exists():
-        result, changed = resource.create(inline=inline)
+    if state == 'present' and resource.exists() and inline is None:
+        result = resource.get(fieldSelector=fieldSelector)
+        method = 'get'
     elif state == 'present' and resource.exists():
         result, changed = resource.replace(inline=inline)
+        method = 'put'
+    elif state == 'present' and not resource.exists():
+        result, changed = resource.create(inline=inline)
+        method = 'create'
     elif state == 'absent' and resource.exists():
         result, changed = resource.delete()
+        method = 'delete'
+    facts = {}
 
-    facts['oc-' + resource.fact_name()] = {'result': result,
-                                           'url': resource.url(),
-                                           'uniquified': uniqueify}
+    if "items" in result.keys():
+        result['item_list'] = result.pop('items')
+    facts['oc'] = {'result': result,
+                   'url': resource.url(),
+                   'uniquified': uniqueify,
+                   'method': method}
+
     kube_config.clean()
     module.exit_json(changed=changed, ansible_facts=facts)
 
