@@ -64,12 +64,6 @@ options:
     description:
     - The inline definition of the resource.  This is mutually exclusive with
     name, namespace and kind.
-  uniqueify:
-    required: false
-    default: true
-    description:
-    - The returned resource definition will have the creationTimestamp,
-    resourceVersion and uid removed.
   host:
     required: false
     description:
@@ -295,7 +289,7 @@ class Resource(object):
                 changed = True
         return destination, changed
 
-    def get(self, fieldSelector='', uniqueify=True):
+    def get(self, fieldSelector=''):
         resource = None
         response = None
         if fieldSelector is not '':
@@ -319,23 +313,6 @@ class Resource(object):
             return None
 
         resource = response.json()
-        if uniqueify:
-            try:
-                del resource['metadata']['creationTimestamp']
-                del resource['metadata']['resourceVersion']
-                del resource['metadata']['uid']
-            except KeyError:
-                pass
-
-            try:
-                del resource['spec']['clusterIP']
-            except KeyError:
-                pass
-
-            try:
-                del resource['status']['ingress']
-            except KeyError:
-                pass
 
         return resource
 
@@ -380,7 +357,7 @@ class Resource(object):
 
     def replace(self, inline):
         changed = False
-        resource = self.get(uniqueify=False)
+        resource = self.get()
         self.module.log(
             msg="Found existing resource for update request: %s"
             % str(resource))
@@ -431,26 +408,6 @@ class Resource(object):
             changed = True
             return response.json(), changed
 
-def clean_deployment_config(module, inline, namespace):
-
-    for container in inline['spec']['template']['spec']['containers']:
-        container['image'] = ' '
-
-    for trigger in inline['spec']['triggers']:
-        if 'ImageChange' in trigger['type']:
-            try:
-                del trigger['imageChangeParams']['lastTriggeredImage']
-            except KeyError:
-                pass
-            try:
-                if trigger['imageChangeParams']['from']['namespace'] in namespace:
-                    trigger['imageChangeParams']['from']['namespace'] = namespace
-            except KeyError:
-                pass
-
-    return inline
-
-
 def main():
 
     module = AnsibleModule(
@@ -466,8 +423,7 @@ def main():
                       type='str'),
             fieldSelector=dict(required=False, default='', type='str'),
             state=dict(required=True,
-                       choices=['present', 'absent']),
-            uniqueify=dict(default=True, type='bool')
+                       choices=['present', 'absent'])
         ),
         mutually_exclusive=(['kind', 'inline']),
         required_if=([['state', 'absent', ['kind']]]),
@@ -484,7 +440,6 @@ def main():
     inline = module.params['inline']
     path = module.params['path']
     state = module.params['state']
-    uniqueify = module.params['uniqueify']
     kind = module.params['kind']
     fieldSelector = module.params['fieldSelector']
     name = module.params['name']
@@ -522,8 +477,6 @@ def main():
                         kind=kind,
                         namespace=namespace,
                         name=name)
-    if inline is not None and "DeploymentConfig" in kind:
-        inline = clean_deployment_config(module, inline, namespace)
 
     if state == 'present' and resource.exists() and inline is None:
         result = resource.get(fieldSelector=fieldSelector)
@@ -531,7 +484,7 @@ def main():
     elif state == 'present' and resource.exists():
         result, changed = resource.replace(inline=inline)
         method = 'put'
-    elif state == 'present' and not resource.exists():
+    elif state == 'present' and not resource.exists() and inline is not None:
         result, changed = resource.create(inline=inline)
         method = 'create'
     elif state == 'absent' and resource.exists():
@@ -543,7 +496,6 @@ def main():
         result['item_list'] = result.pop('items')
     facts['oc'] = {'result': result,
                    'url': resource.url(),
-                   'uniquified': uniqueify,
                    'method': method}
 
     kube_config.clean()
