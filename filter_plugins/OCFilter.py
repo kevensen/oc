@@ -3,8 +3,25 @@
 from ansible.errors import AnsibleError
 from ansible.plugins.lookup import LookupBase
 from ansible.utils.listify import listify_lookup_plugin_terms
+import base64
+import re
+
+def dockercfg_change_server(data, newserver, oldserver, default_port=''):
+    decoded = base64.b64decode(data['.dockercfg'])
 
 
+    if isinstance(default_port, int):
+        default_port = str(default_port)
+
+    if default_port is not '':
+        oldserver += ":" + default_port
+    new_config = decoded.replace(oldserver, newserver)
+    new_config = re.sub(r',\"docker-registry.default.svc:5000.+[^}]', '', new_config)
+    new_config = new_config.replace("}}}","}}")
+
+    data['.dockercfg'] = base64.b64encode(new_config)
+
+    return data
 
 def remove_image(data, delete=False):
     for container in data['spec']['containers']:
@@ -26,7 +43,6 @@ def translate_image_trigger(data, namespace):
                     trigger['imageChangeParams']['from']['namespace'] = namespace
             except KeyError:
                 pass
-
     return data
 
 def uniqueify_resource(resource):
@@ -54,5 +70,6 @@ class FilterModule(object):
         return {
             'remove_image': remove_image,
             'translate_image_trigger': translate_image_trigger,
-            'uniqueify_resource': uniqueify_resource
+            'uniqueify_resource': uniqueify_resource,
+            'dockercfg_change_server': dockercfg_change_server
         }
