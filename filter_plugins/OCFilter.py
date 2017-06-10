@@ -52,6 +52,10 @@ def translate_image_trigger(data, namespace):
     return data
 
 
+def remove_system_users(data):
+    return [username for username in data if not username.startswith('system:')]
+
+
 def uniqueify_resource(resource):
 
     try:
@@ -81,5 +85,6 @@ class FilterModule(object):
             'remove_image': remove_image,
             'translate_image_trigger': translate_image_trigger,
             'uniqueify_resource': uniqueify_resource,
-            'dockercfg_change_server': dockercfg_change_server
+            'dockercfg_change_server': dockercfg_change_server,
+            'remove_system_users': remove_system_users
         }
