@@ -85,5 +85,6 @@ class FilterModule(object):
             'remove_image': remove_image,
             'translate_image_trigger': translate_image_trigger,
             'uniqueify_resource': uniqueify_resource,
-            'dockercfg_change_server': dockercfg_change_server
+            'dockercfg_change_server': dockercfg_change_server,
+            'remove_system_users': remove_system_users
         }
