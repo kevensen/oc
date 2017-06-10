@@ -52,6 +52,11 @@ def translate_image_trigger(data, namespace):
     return data
 
 
+def remove_system_users(data):
+    return [username for username in data
+            if username not username.startswith('system:')]
+
+
 def uniqueify_resource(resource):
 
     try:
