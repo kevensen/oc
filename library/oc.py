@@ -139,7 +139,6 @@ url:
 '''
 
 
-
 class KubeConfig(object):
     def __init__(self, path, host, ansible):
         yml = []
@@ -222,14 +221,15 @@ class OC(object):
                                           self.kube_config.client_key_file),
                                     verify=self.kube_config.ca_file).json()
             for resource in response['resources']:
-                if not 'generated' in resource['name']:
-                    self.kinds[resource['kind']] = {'kind': resource['kind'],
-                                                    'name': resource['name'].split('/')[0],
-                                                    'namespaced': resource['namespaced'],
-                                                    'api': api,
-                                                    'version': 'v1',
-                                                    'baseurl': url
-                                                    }
+                if 'generated' not in resource['name']:
+                    self.kinds[resource['kind']] = \
+                        {'kind': resource['kind'],
+                         'name': resource['name'].split('/')[0],
+                         'namespaced': resource['namespaced'],
+                         'api': api,
+                         'version': 'v1',
+                         'baseurl': url
+                         }
 
 
 class Resource(object):
@@ -283,7 +283,8 @@ class Resource(object):
                     for new_dict in source[key]:
                         found = False
                         for old_dict in destination[key]:
-                            if 'name' in old_dict.keys() and 'name' in new_dict.keys():
+                            if ('name' in old_dict.keys() and
+                                    'name' in new_dict.keys()):
                                 if old_dict['name'] == new_dict['name']:
                                     destination[key].remove(old_dict)
                                     break
@@ -362,7 +363,8 @@ class Resource(object):
             self.module.fail_json(
                 msg='Failed to create resource %s in \
                 namespace %s with msg %s' % (self.name,
-                self.namespace, response.reason))
+                                             self.namespace,
+                                             response.reason))
         else:
             changed = True
             return response.json(), changed
@@ -420,6 +422,7 @@ class Resource(object):
             changed = True
             return response.json(), changed
 
+
 def main():
 
     module = AnsibleModule(
@@ -474,7 +477,6 @@ def main():
                 inline['metadata']['namespace'] = namespace
         except KeyError:
             pass
-
 
     result = None
     kube_config = KubeConfig(path, host, module)
