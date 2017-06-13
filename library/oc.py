@@ -18,15 +18,6 @@
 # along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
 
 
-from ansible.module_utils.basic import AnsibleModule
-from ansible.module_utils.pycompat24 import get_exception
-import base64
-import json
-import os
-import re
-import requests
-import yaml
-
 ANSIBLE_METADATA = {'metadata_version': '1.0',
                     'status': ['preview'],
                     'supported_by': 'community'}
@@ -45,7 +36,7 @@ module uses the first (often the only) cluster entry under the "clusters"
 entry. Thus, no API endpoint is required.
 
 This is a self contained module and has no external dependencies.
-version_added: "2.3"
+version_added: "2.4"
 options:
   kind:
     required: true
@@ -146,6 +137,15 @@ method:
   type: string
 ...
 '''
+
+from ansible.module_utils.basic import AnsibleModule
+from ansible.module_utils.pycompat24 import get_exception
+import base64
+import json
+import os
+import re
+import requests
+import yaml
 
 
 class KubeConfig(object):
@@ -446,10 +446,8 @@ def main():
             kind=dict(required=False, type='str'),
             name=dict(required=False, type='str'),
             namespace=dict(required=False, type='str'),
-
-            path=dict(required=False,
-                      default='/root/.kube/config',
-                      type='str'),
+            path=dict(required=False, type='path'
+                      default='/root/.kube/config'),
             fieldSelector=dict(required=False, default='', type='str'),
             state=dict(required=True,
                        choices=['present', 'absent'])
@@ -520,7 +518,7 @@ def main():
         method = 'delete'
     facts = {}
 
-    if result is not None and "items" in result.keys():
+    if result is not None and "items" in result:
         result['item_list'] = result.pop('items')
     elif result is None and state == 'present':
         result = 'Resource not present and no inline provided.'
