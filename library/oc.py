@@ -81,9 +81,10 @@ options:
     - absent
     description:
     - If the state is present, and the resource doesn't exist, it shall
-    be created.  If the state is present and the resource exists, the
-    definition will be updated, again using an inline definition.  If the
-    state is absent, the resource will be deleted if it exists.
+    be created using the inline definition.  If the state is present and
+    the resource exists, the definition will be updated, again using an
+    inline definition.  If the state is absent, the resource will be deleted
+    if it exists.
 
 """
 
@@ -119,20 +120,28 @@ EXAMPLES = """
       userNames:
       - "myuser"
 
+ - name: Obtain an object definition
+   oc:
+     state: present
+     name: myroute
+     namespace: mynamespace
+     kind: Route
+
 """
 
 RETURN = '''
 result:
-  description: The resource that was created or changed.  In the case of
-  a deletion, this is the response from the delete request.
+  description: The resource that was created, changed, or otherwise determined
+  to be present.  In the case of a deletion, this is the response from the
+  delete request.
   returned: success
   type: string
-uniquified:
-  description: Whether or not the returned object has been uniquified.
-  returned: success
-  type: boolean
 url:
   description: The URL to the requested resource.
+  returned: success
+  type: string
+method:
+  description: The HTTP method that was used to take action upon the resource
   returned: success
   type: string
 ...
@@ -165,6 +174,9 @@ class KubeConfig(object):
 
                 self.parse_user_data(config['users'])
 
+                # The 'requests' module only accepts the cert, key and CA as a
+                # path to a file.  Therefore we must temporarily write
+                # them out.
                 self.client_cert_file = '/tmp/' + self.name + '-cert.pem'
                 self.client_key_file = '/tmp/' + self.name + '-key.pem'
                 self.ca_file = '/tmp/' + self.name + '-ca-cert.pem'
@@ -260,6 +272,8 @@ class Resource(object):
         self.module.log(msg="URL for request is %s" % url)
         return url
 
+    # Attempts to 'kindly' merge the dictionaries into a new object
+    # deifinition
     def merge(self, source, destination, changed):
 
         for key, value in source.items():
@@ -506,8 +520,10 @@ def main():
         method = 'delete'
     facts = {}
 
-    if "items" in result.keys():
+    if result is not None and "items" in result.keys():
         result['item_list'] = result.pop('items')
+    elif result is None and state == 'present':
+        result = 'Resource not present and no inline provided.'
     facts['oc'] = {'result': result,
                    'url': resource.url(),
                    'method': method}
