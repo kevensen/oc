@@ -1,7 +1,7 @@
 OC
 =========
 
-This role provides one library for the purposes of creating, modifying and/or deleting objects in the OpenShift Container Platform.  The oc.py library assumes that the target host has it's Kube config at /root/.kube/config.  This, of course, can be set with each task invocation.
+This role provides one library for the purposes of creating, modifying and/or deleting objects in the OpenShift Container Platform.  The oc.py library relies on an OpenShift service account and token for access and authorization.
 
 Requirements
 ------------
@@ -42,6 +42,8 @@ This is how a project might be deleted.
       state: absent
       name: "{{ project_name }}"
       kind: project
+      token: abcdefg
+      validate_certs: false
     register: result
   - debug:
       var: result
