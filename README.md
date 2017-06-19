@@ -16,7 +16,15 @@ No specific role variables.
 Dependencies
 ------------
 
-No external dependencies.
+This role depends on a service account to be created in each OpenShift cluster.  This can be accomplished similar to the following.
+```terminal
+$ oc project default
+$ oc create serviceaccount ansible-sa
+$ oadm policy add-cluster-role-to-user cluster-admin system:serviceaccount:default:ansible-sa
+```
+Please keep in mind that the above commands will create an extremely permissive service account.  It is recommended you tailor access controls as you deem necessary.
+
+When the service account is created, OpenShift automatically creates a token in the form of a secret.  Use this token and create a variable to use in your playbooks.
 
 Example Playbook
 ----------------

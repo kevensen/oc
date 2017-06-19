@@ -24,63 +24,68 @@ ANSIBLE_METADATA = {'metadata_version': '1.0',
 
 
 DOCUMENTATION = """
-module: oc
 author:
-- "Kenneth D. Evensen (@kevensen)"
-short_description: Manage OpenShift Resources
+  - "Kenneth D. Evensen (@kevensen)"
 description:
-- This module allows management of resources in an OpenShift cluster.
-This module gets executed on an OpenShift master and uses the system:admin's
-.kubeconfig file typically located at /root/.kube/config.  By default, this
-module uses the first (often the only) cluster entry under the "clusters"
-entry. Thus, no API endpoint is required.
-
-This is a self contained module and has no external dependencies.
-version_added: "2.4"
+  - |-
+      This module allows management of resources in an OpenShift cluster.  The
+      inventory host can be any host with network connectivity to the OpenShift
+      cluster; the default port being 8443/TCP.  This module relies on a token
+      to authenticate to OpenShift.  This can either be a user or a service
+      account.
+module: oc
 options:
-  kind:
-    required: true
-    description:
-      - The kind of the resource upon which to take action.
-  name:
-    required: false
-    description:
-      - The name of the resource on which to take action.
-  namespace:
-    required: false
-    description:
-      - The namespace of the resource upon which to take action.
-  inline:
-    required: false
-    description:
-    - The inline definition of the resource.  This is mutually exclusive with
-    name, namespace and kind.
   host:
-    required: false
     description:
-    - In the case that the ansible target is not the API endpoint, this value
-    can be specified to match a host in the Kube config.
-  path:
+      - |-
+         Hostname or address of the OpenShift API endpoint.  By default, this is
+         expected to be the current inventory host.
     required: false
-    default: /root/.kube/config
+    default: 127.0.0.1
+  port:
     description:
-    - The path to the kubeconfig file on the host.
-  state:
+      - |-
+         The port number of the API endpoint.
+    required: false
+    default: 8443
+  inline:
+    description:
+      - "The inline definition of the resource.  This is mutually exclusive
+         with name, namespace and kind."
+    required: false
+  kind:
+    description:
+      - "The kind of the resource upon which to take action."
     required: true
-    choices:
-    - present
-    - absent
+  name:
     description:
-    - If the state is present, and the resource doesn't exist, it shall
-    be created using the inline definition.  If the state is present and
-    the resource exists, the definition will be updated, again using an
-    inline definition.  If the state is absent, the resource will be deleted
-    if it exists.
+      - "The name of the resource on which to take action."
+    required: false
+  namespace:
+    description:
+      - "The namespace of the resource upon which to take action."
+    required: false
+  toekn:
+    description:
+      - "The token with which to authenticate agains the OpenShift cluster."
+    required: true
+  state:
+    choices:
+      - present
+      - absent
+    description:
+      - "If the state is present, and the resource doesn't exist, it shall be
+        created using the inline definition.  If the state is present and the
+        resource exists, the definition will be updated, again using an inline
+        definition.  If the state is absent, the resource will be deleted if
+        it exists."
+    required: true
+short_description: "Manage OpenShift Resources"
+version_added: "2.4"
 
 """
 
 EXAMPLES = """
-
 - name: Create project
   oc:
     state: present
@@ -90,14 +95,14 @@ EXAMPLES = """
         name: ansibletestproject
       displayName: Ansible Test Project
       description: This project was created using Ansible
-
+      token: << redacted >>
 - name: Delete a service
   oc:
     state: absent
     name: myservice
     namespace: mynamespace
     kind: Service
-
+    token: << redacted >>
 - name: Add project role Admin to a user
   oc:
     state: present
@@ -110,21 +115,22 @@ EXAMPLES = """
         name: admin
       userNames:
       - "myuser"
-
- - name: Obtain an object definition
-   oc:
-     state: present
-     name: myroute
-     namespace: mynamespace
-     kind: Route
-
+      token: << redacted >>
+- name: Obtain an object definition
+  oc:
+   state: present
+   name: myroute
+   namespace: mynamespace
+   kind: Route
+   token: << redacted >>
 """
 
 RETURN = '''
 result:
-  description: The resource that was created, changed, or otherwise determined
-  to be present.  In the case of a deletion, this is the response from the
-  delete request.
+  description: >
+    The resource that was created, changed, or otherwise determined
+    to be present.  In the case of a deletion, this is the response from the
+    delete request.
   returned: success
   type: string
 url:
@@ -140,99 +146,48 @@ method:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils.pycompat24 import get_exception
+from ansible.module_utils import urls
+from ansible.module_utils.six.moves.urllib.parse import urlencode
 import base64
 import json
 import os
 import re
-import requests
 import yaml
 
 
-class KubeConfig(object):
-    def __init__(self, path, host, ansible):
-        yml = []
-        self.path = path
-        self.host = host
-        self.ansible = ansible
-        with open(path, 'r') as stream:
-            try:
-                config = yaml.load(stream)
-                if not host:
-                    self.cluster = config['clusters'][0]
-                    self.host = self.cluster['cluster']['server']
-                else:
-                    self.cluster = self.parse_cluster_data(
-                                                    config['clusters'],
-                                                    host)
-                if 'api-version' in self.cluster['cluster'].keys():
-                    self.api_version = self.cluster['cluster']['api-version']
-                else:
-                    self.api_version = config['apiVersion']
-                self.ca = self.cluster['cluster']['certificate-authority-data']
-                self.server = self.cluster['cluster']['server']
-                self.name = self.cluster['name']
-
-                self.parse_user_data(config['users'])
-
-                # The 'requests' module only accepts the cert, key and CA as a
-                # path to a file.  Therefore we must temporarily write
-                # them out.
-                self.client_cert_file = '/tmp/' + self.name + '-cert.pem'
-                self.client_key_file = '/tmp/' + self.name + '-key.pem'
-                self.ca_file = '/tmp/' + self.name + '-ca-cert.pem'
-                self.write_file(self.client_cert_file, self.client_cert)
-                self.write_file(self.client_key_file, self.client_key)
-                self.write_file(self.ca_file, self.ca)
-            except yaml.YAMLError as exc:
-                self.ansible.fail_json(msg='Unable to parse config file %s'
-                                       % path)
-
-    def parse_cluster_data(self, clusters, host):
-        for cluster in clusters:
-            if host == cluster['cluster']['server']:
-                return cluster
-        self.ansible.fail_json(
-                        msg='Unable to find cluster %s in kube config file'
-                        % host)
-
-    def parse_user_data(self, users):
-        for user in users:
-            name = user['name'].split('/')[1]
-            if name == self.name:
-                self.client_cert = user['user']['client-certificate-data']
-                self.client_key = user['user']['client-key-data']
-                return
-        self.ansible.fail_json(
-            msg='Can not parse client certificate data out of config file %s.'
-            % self.path)
-
-    def write_file(self, file_name, cert_string):
-        self.ansible.log("Writing temporary file %s" % file_name)
-        f = open(file_name, 'w')
-        f.write(base64.standard_b64decode(cert_string))
-        f.close()
-
-    def clean(self):
-        os.remove(self.client_key_file)
-        os.remove(self.client_cert_file)
-        os.remove(self.ca_file)
-
-
 class OC(object):
-    def __init__(self, kube_config, module):
+    def __init__(self, token, host, port, module):
         self.apis = ['api', 'oapi']
-        self.kube_config = kube_config
+        self.token = token
         self.module = module
+        self.host = host
+        self.port = port
         self.kinds = {}
 
     def build_facts(self):
+        bearer = "Bearer " + self.token
+        headers = {"Authorization": bearer}
         for api in self.apis:
-            url = self.kube_config.host + "/" + api + "/v1"
-            response = requests.get(url,
-                                    cert=(self.kube_config.client_cert_file,
-                                          self.kube_config.client_key_file),
-                                    verify=self.kube_config.ca_file).json()
-            for resource in response['resources']:
+            url = "https://"
+            url += self.host
+            url += ":"
+            url += str(self.port)
+            url += "/"
+            url += api
+            url += "/v1"
+            response, info = urls.fetch_url(module=self.module,
+                                            url=url,
+                                            headers=headers,
+                                            method='get')
+
+            if info['status'] >= 300:
+                self.module.fail_json(
+                    msg="Failed to get build facts with url %s resulting \
+                    in code %s and response %s" %
+                    (url, str(info['status']), info['body']))
+            self.module.log(msg="URL is %s" % url)
+            self.module.log(msg="Response is %s" % response)
+            for resource in json.loads(response.read())['resources']:
                 if 'generated' not in resource['name']:
                     self.kinds[resource['kind']] = \
                         {'kind': resource['kind'],
@@ -245,14 +200,17 @@ class OC(object):
 
 
 class Resource(object):
-    def __init__(self, kube_config, module, kinds,
+    def __init__(self, token, module, kinds,
                  kind, namespace=None, name=None):
-        self.kube_config = kube_config
         self.module = module
         self.kinds = kinds
         self.kind = kind
         self.namespace = namespace
         self.name = name
+        bearer = "Bearer " + token
+        self.headers = {}
+        self.headers = {"Authorization": bearer,
+                        "Content-type": "application/json"}
 
     def url(self):
         url = self.kinds[self.kind]['baseurl']
@@ -302,7 +260,7 @@ class Resource(object):
                                 if old_dict['name'] == new_dict['name']:
                                     destination[key].remove(old_dict)
                                     break
-                            if cmp(old_dict, new_dict) == 0:
+                            if old_dict == new_dict:
                                 found = True
                                 break
 
@@ -317,31 +275,37 @@ class Resource(object):
         return destination, changed
 
     def get(self, fieldSelector=''):
-        resource = None
-        response = None
+        url = self.url()
         if fieldSelector is not '':
-            response = requests.get(self.url(),
-                                    params={'fieldSelector': fieldSelector},
-                                    cert=(self.kube_config.client_cert_file,
-                                          self.kube_config.client_key_file),
-                                    verify=self.kube_config.ca_file)
-        else:
-            response = requests.get(self.url(),
-                                    cert=(self.kube_config.client_cert_file,
-                                          self.kube_config.client_key_file),
-                                    verify=self.kube_config.ca_file)
+            params = urlencode({'fieldSelector': fieldSelector})
+            url += "?"
+            url += params
 
-        if response.json() is not None and response.json() != {}:
-            if (response.json()['kind'] == 'Status' and
-                    response.json()['metadata'] == {}):
+        response, info = urls.fetch_url(module=self.module,
+                                        url=url,
+                                        headers=self.headers,
+                                        method='get')
+
+        self.module.log(msg="Code for GET request is: %s" %
+                        str(info['status']))
+        if info['status'] == 404:
+            return None
+        if info['status'] == 403:
+            self.module.fail_json(
+                msg='Failed to get resource %s in \
+                namespace %s with msg %s' % (self.name,
+                                             self.namespace,
+                                             info['body']))
+
+        self.module.log(msg="Response for GET request is: %s" % str(response))
+
+        json_response = self.module.from_json(response.read())
+        if json_response is not None and json_response != {}:
+            if (json_response['kind'] == 'Status' and
+                    json_response['metadata'] == {}):
                 return None
 
-        if response.status_code == 404:
-            return None
-
-        resource = response.json()
-
-        return resource
+        return json_response
 
     def exists(self):
         if self.get() is not None:
@@ -353,104 +317,99 @@ class Resource(object):
 
         inline['kind'] = self.kind
         inline['apiVersion'] = self.kinds[self.kind]['version']
-
-        self.module.log(
-            msg="JSON body for create request is %s"
-            % json.dumps(inline))
+        data = self.module.jsonify(inline)
+        self.module.log(msg="JSON body for create request is %s" % data)
 
         url = self.url()[:self.url().rfind('/')]
-        response = requests.post(url,
-                                 data=json.dumps(inline),
-                                 cert=(self.kube_config.client_cert_file,
-                                       self.kube_config.client_key_file),
-                                 verify=self.kube_config.ca_file)
+        response, info = urls.fetch_url(module=self.module,
+                                        headers=self.headers,
+                                        url=url,
+                                        method='post',
+                                        data=data)
 
-        self.module.log(
-            msg="Response for create request is %s"
-            % str(response.json()))
+        self.module.log(msg="Code for POST request is: %s" %
+                        str(info['status']))
 
-        if response.status_code == 404:
+        if info['status'] == 404:
             return None, changed
-        elif response.status_code == 409:
-            return response.json(), changed
-        elif response.status_code >= 300:
+        elif info['status'] == 409:
+            return self.get(), changed
+        elif info['status'] >= 300:
             self.module.fail_json(
                 msg='Failed to create resource %s in \
                 namespace %s with msg %s' % (self.name,
                                              self.namespace,
-                                             response.reason))
-        else:
-            changed = True
-            return response.json(), changed
+                                             info['body']))
+
+        self.module.log(msg="Response for POST request is: %s" % str(response))
+        return self.module.from_json(response.read()), True
 
     def replace(self, inline):
         changed = False
         resource = self.get()
-        self.module.log(
-            msg="Found existing resource for update request: %s"
-            % str(resource))
         new_resource, changed = self.merge(inline, resource, changed)
+        data = self.module.jsonify(new_resource)
 
         if changed:
             self.module.log(
                 msg="JSON body for update request is %s"
                 % json.dumps(new_resource))
-            response = requests.put(self.url(),
-                                    data=json.dumps(new_resource),
-                                    cert=(self.kube_config.client_cert_file,
-                                          self.kube_config.client_key_file),
-                                    verify=self.kube_config.ca_file)
-            self.module.log(
-                msg="Response for update request is %s"
-                % str(response.json()))
+            response, info = urls.fetch_url(module=self.module,
+                                            url=self.url(),
+                                            headers=self.headers,
+                                            method='put',
+                                            data=data)
+            self.module.log(msg="Code for PUT request is: %s"
+                            % str(info['status']))
 
-            if response.status_code >= 300:
+            if info['status'] >= 300:
                 self.module.fail_json(
                     msg='Failed to update resource %s in \
                     namespace %s with msg %s'
-                    % (self.name, self.namespace, response.reason))
+                    % (self.name, self.namespace, info['body']))
 
-            return response.json(), changed
+            return self.module.from_json(response.read()), changed
         return resource, changed
 
     def delete(self):
 
         changed = False
 
-        response = requests.delete(self.url(),
-                                   cert=(self.kube_config.client_cert_file,
-                                         self.kube_config.client_key_file),
-                                   verify=self.kube_config.ca_file)
+        response, info = urls.fetch_url(url=self.url(),
+                                        module=self.module,
+                                        headers=self.headers,
+                                        method='delete')
 
-        self.module.log(
-            msg="Response for delete request is %s"
-            % str(response.json()))
+        self.module.log(msg="Code for DELETE request is: %s"
+                        % str(info['status']))
 
-        if response.status_code == 404:
+        if info['status'] == 404:
             return None, changed
-        elif response.status_code >= 300:
+        elif info['status'] >= 300:
             self.module.fail_json(msg='Failed to delete resource %s in \
                                   namespace %s with msg %s'
-                                  % (name, namespace, response.msg))
-        else:
-            changed = True
-            return response.json(), changed
+                                  % (name, namespace, info['body']))
+        self.module.log(msg="Response for DELETE request is: %s"
+                        % str(response))
+        changed = True
+        return self.module.from_json(response.read()), changed
 
 
 def main():
 
     module = AnsibleModule(
         argument_spec=dict(
-            host=dict(required=False, type='str'),
+            host=dict(required=False, type='str', default='127.0.0.1'),
+            port=dict(required=False, type='int', default=8443),
             inline=dict(required=False, type='dict'),
             kind=dict(required=False, type='str'),
             name=dict(required=False, type='str'),
             namespace=dict(required=False, type='str'),
-            path=dict(required=False, type='path'
-                      default='/root/.kube/config'),
+            token=dict(required=True, type='str', no_log=True),
             fieldSelector=dict(required=False, default='', type='str'),
             state=dict(required=True,
-                       choices=['present', 'absent'])
+                       choices=['present', 'absent']),
+            validate_certs=dict(required=False, type='bool', default='yes')
         ),
         mutually_exclusive=(['kind', 'inline']),
         required_if=([['state', 'absent', ['kind']]]),
@@ -464,13 +423,14 @@ def main():
     namespace = None
 
     host = module.params['host']
+    port = module.params['port']
     inline = module.params['inline']
-    path = module.params['path']
     state = module.params['state']
     kind = module.params['kind']
     fieldSelector = module.params['fieldSelector']
     name = module.params['name']
     namespace = module.params['namespace']
+    token = module.params['token']
 
     if inline is not None:
         kind = inline['kind']
@@ -491,14 +451,13 @@ def main():
             pass
 
     result = None
-    kube_config = KubeConfig(path, host, module)
-    oc = OC(kube_config, module)
+    oc = OC(token, host, port, module)
     oc.build_facts()
     changed = False
     method = ''
 
-    resource = Resource(kube_config=kube_config,
-                        module=module,
+    resource = Resource(module=module,
+                        token=token,
                         kinds=oc.kinds,
                         kind=kind,
                         namespace=namespace,
@@ -516,6 +475,7 @@ def main():
     elif state == 'absent' and resource.exists():
         result, changed = resource.delete()
         method = 'delete'
+
     facts = {}
 
     if result is not None and "items" in result:
@@ -526,7 +486,6 @@ def main():
                    'url': resource.url(),
                    'method': method}
 
-    kube_config.clean()
     module.exit_json(changed=changed, ansible_facts=facts)
 
 if __name__ == '__main__':
