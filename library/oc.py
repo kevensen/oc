@@ -32,7 +32,10 @@ description:
       inventory host can be any host with network connectivity to the OpenShift
       cluster; the default port being 8443/TCP.  This module relies on a token
       to authenticate to OpenShift.  This can either be a user or a service
-      account.
+      account.  For example:
+
+      $ oc create serviceaccount ansible-sa
+      $ oadm policy add-cluster-role-to-user cluster-admin system:serviceaccounts:ansible-sa
 module: oc
 options:
   host:
@@ -148,87 +151,193 @@ from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils.pycompat24 import get_exception
 from ansible.module_utils import urls
 from ansible.module_utils.six.moves.urllib.parse import urlencode
-import base64
-import json
-import os
-import re
-import yaml
+import copy
+
+class ApiEndpoint(object):
+    def __init__(self, host, port, api, version):
+        self.host = host
+        self.port = port
+        self.api = api
+        self.version = version
+
+    def __str__(self):
+        url = "https://"
+        url += self.host
+        url += ":"
+        url += str(self.port)
+        url += "/"
+        url += self.api
+        url += "/"
+        url += self.version
+        return url
+
+class ResourceEndpoint(ApiEndpoint):
+    def __init__(self, name, namespaced, api_endpoint):
+        super(self.__class__, self).__init__(api_endpoint.host,
+                                             api_endpoint.port,
+                                             api_endpoint.api,
+                                             api_endpoint.version)
+        self.name = name
+        self.namespaced = namespaced
+
+class NamedResource(object):
+    def __init__(self, module, definition, resource_endpoint):
+        self.module = module
+        self.set_definition(definition)
+        self.resource_endpoint = resource_endpoint
+
+    def name(self):
+        if 'name' in self.definition['metadata'].keys():
+            return self.definition['metadata']['name']
+        return None
+
+    def namespace(self):
+        if 'namespace' in self.definition['metadata'].keys():
+            return self.definition['metadata']['namespace']
+        return None
+
+    def set_definition(self, definition):
+        if isinstance(definition, str):
+            self.definition = self.module.from_json(response.read())
+        else:
+            self.definition = definition
+
+    def url(self, create=False):
+        url = str(self.resource_endpoint)
+        url += '/'
+        if self.resource_endpoint.namespaced:
+            url += 'namespaces/'
+            url += self.namespace()
+            url += '/'
+        url += self.resource_endpoint.name
+        if not create:
+            url += '/'
+            url += self.name()
+        return url
+
+    def __dict__(self):
+        return self.definition
+
+    def __str__(self):
+        return self.module.jsonify(self.definition)
 
 
 class OC(object):
-    def __init__(self, token, host, port, module):
-        self.apis = ['api', 'oapi']
+    def __init__(self, module, token, host, port,
+                 apis=['api', 'oapi']):
+        self.apis = apis
+        self.version = 'v1'
         self.token = token
         self.module = module
         self.host = host
         self.port = port
         self.kinds = {}
 
-    def build_facts(self):
-        bearer = "Bearer " + self.token
-        headers = {"Authorization": bearer}
-        for api in self.apis:
-            url = "https://"
-            url += self.host
-            url += ":"
-            url += str(self.port)
-            url += "/"
-            url += api
-            url += "/v1"
-            response, info = urls.fetch_url(module=self.module,
-                                            url=url,
-                                            headers=headers,
-                                            method='get')
-
-            if info['status'] >= 300:
-                self.module.fail_json(
-                    msg="Failed to get build facts with url %s resulting \
-                    in code %s and response %s" %
-                    (url, str(info['status']), info['body']))
-            self.module.log(msg="URL is %s" % url)
-            self.module.log(msg="Response is %s" % response)
-            for resource in json.loads(response.read())['resources']:
-                if 'generated' not in resource['name']:
-                    self.kinds[resource['kind']] = \
-                        {'kind': resource['kind'],
-                         'name': resource['name'].split('/')[0],
-                         'namespaced': resource['namespaced'],
-                         'api': api,
-                         'version': 'v1',
-                         'baseurl': url
-                         }
-
-
-class Resource(object):
-    def __init__(self, token, module, kinds,
-                 kind, namespace=None, name=None):
-        self.module = module
-        self.kinds = kinds
-        self.kind = kind
-        self.namespace = namespace
-        self.name = name
-        bearer = "Bearer " + token
-        self.headers = {}
-        self.headers = {"Authorization": bearer,
+        self.bearer = "Bearer " + self.token
+        self.headers = {"Authorization": self.bearer,
                         "Content-type": "application/json"}
+        # Build Endpoints
+        for api in self.apis:
+            endpoint = ApiEndpoint(self.host,
+                                   self.port,
+                                   api,
+                                   self.version)
+            # Create resource facts
+            response, code = self.connect(str(endpoint), "get")
 
-    def url(self):
-        url = self.kinds[self.kind]['baseurl']
-        if self.kinds[self.kind]['namespaced'] is True:
-            url += '/namespaces/'
-            if self.namespace is None:
-                self.module.fail_json(msg='Kind %s requires a namespace.  \
-                                      None provided' % self.kind)
-            url += self.namespace
+            if code < 300:
+                self.build_kinds(response['resources'], endpoint)
 
-        url += '/'
-        url += self.kinds[self.kind]['name']
+    def build_kinds(self, resources, endpoint):
+        for resource in resources:
+            if 'generated' not in resource['name']:
+                self.kinds[resource['kind']] = \
+                    ResourceEndpoint(resource['name'].split('/')[0],
+                                     resource['namespaced'],
+                                     endpoint)
 
-        if self.name is not None:
-            url += '/'
-            url += self.name
-        self.module.log(msg="URL for request is %s" % url)
-        return url
+    def get(self, named_resource):
+        changed = False
+        response, code = self.connect(named_resource.url(), 'get')
+        return response, changed
+
+    def exists(self, named_resource):
+        _, code = self.connect(named_resource.url(), 'get')
+        if code == 200:
+            return True
+        return False
+
+    def delete(self, named_resource):
+        changed = False
+        response, code = self.connect(named_resource.url(), 'delete')
+        if code == 404:
+            return None, changed
+        elif code >= 300:
+            self.module.fail_json(msg='Failed to delete resource %s in \
+                                  namespace %s with msg %s'
+                                  % (named_resource.name(),
+                                     named_resource.namespace(),
+                                     response))
+        changed = True
+        return response, changed
+
+    def create(self, named_resource):
+        changed = False
+        response, code = self.connect(named_resource.url(create=True),
+                                      'post',
+                                      data=str(named_resource))
+        if code == 404:
+            return None, changed
+        elif code == 409:
+            return self.get(named_resource)
+        elif code >= 300:
+            self.module.fail_json(
+                msg='Failed to create resource %s in \
+                namespace %s with msg %s' % (named_resource.name(),
+                                             named_resource.namespace(),
+                                             response))
+        changed = True
+        return response, changed
+
+    def replace(self, named_resource):
+        changed = False
+
+        existing_definition, _ = self.get(named_resource)
+
+        new_definition, changed = self.merge(named_resource.definition,
+                                             existing_definition,
+                                             changed)
+        if changed:
+            named_resource.set_definition(new_definition)
+            response, code = self.connect(named_resource.url(),
+                                          'put',
+                                          data=str(named_resource))
+
+            return response, changed
+        return str(named_resource), changed
+
+    def connect(self, url, method, data=None):
+        body = None
+        if data is not None:
+            self.module.log(msg="Payload is %s" % data)
+        response, info = urls.fetch_url(module=self.module,
+                                        url=url,
+                                        headers=self.headers,
+                                        method=method,
+                                        data=data)
+        if response is not None:
+            body = response.read()
+        if info['status'] >= 300:
+            body = info['body']
+
+        self.module.log(msg="The URL, method, and code for " +
+                            "connect is %s, %s, %d" %
+                            (url, method, info['status']))
+
+        return self.module.from_json(body), info['status']
+
+    def get_resource_endpoint(self, kind):
+        return self.kinds[kind]
 
     # Attempts to 'kindly' merge the dictionaries into a new object
     # deifinition
@@ -274,126 +383,6 @@ class Resource(object):
                 changed = True
         return destination, changed
 
-    def get(self, fieldSelector=''):
-        url = self.url()
-        if fieldSelector is not '':
-            params = urlencode({'fieldSelector': fieldSelector})
-            url += "?"
-            url += params
-
-        response, info = urls.fetch_url(module=self.module,
-                                        url=url,
-                                        headers=self.headers,
-                                        method='get')
-
-        self.module.log(msg="Code for GET request is: %s" %
-                        str(info['status']))
-        if info['status'] == 404:
-            return None
-        if info['status'] == 403:
-            self.module.fail_json(
-                msg='Failed to get resource %s in \
-                namespace %s with msg %s' % (self.name,
-                                             self.namespace,
-                                             info['body']))
-
-        self.module.log(msg="Response for GET request is: %s" % str(response))
-
-        json_response = self.module.from_json(response.read())
-        if json_response is not None and json_response != {}:
-            if (json_response['kind'] == 'Status' and
-                    json_response['metadata'] == {}):
-                return None
-
-        return json_response
-
-    def exists(self):
-        if self.get() is not None:
-            return True
-        return False
-
-    def create(self, inline):
-        changed = False
-
-        inline['kind'] = self.kind
-        inline['apiVersion'] = self.kinds[self.kind]['version']
-        data = self.module.jsonify(inline)
-        self.module.log(msg="JSON body for create request is %s" % data)
-
-        url = self.url()[:self.url().rfind('/')]
-        response, info = urls.fetch_url(module=self.module,
-                                        headers=self.headers,
-                                        url=url,
-                                        method='post',
-                                        data=data)
-
-        self.module.log(msg="Code for POST request is: %s" %
-                        str(info['status']))
-
-        if info['status'] == 404:
-            return None, changed
-        elif info['status'] == 409:
-            return self.get(), changed
-        elif info['status'] >= 300:
-            self.module.fail_json(
-                msg='Failed to create resource %s in \
-                namespace %s with msg %s' % (self.name,
-                                             self.namespace,
-                                             info['body']))
-
-        self.module.log(msg="Response for POST request is: %s" % str(response))
-        return self.module.from_json(response.read()), True
-
-    def replace(self, inline):
-        changed = False
-        resource = self.get()
-        new_resource, changed = self.merge(inline, resource, changed)
-        data = self.module.jsonify(new_resource)
-
-        if changed:
-            self.module.log(
-                msg="JSON body for update request is %s"
-                % json.dumps(new_resource))
-            response, info = urls.fetch_url(module=self.module,
-                                            url=self.url(),
-                                            headers=self.headers,
-                                            method='put',
-                                            data=data)
-            self.module.log(msg="Code for PUT request is: %s"
-                            % str(info['status']))
-
-            if info['status'] >= 300:
-                self.module.fail_json(
-                    msg='Failed to update resource %s in \
-                    namespace %s with msg %s'
-                    % (self.name, self.namespace, info['body']))
-
-            return self.module.from_json(response.read()), changed
-        return resource, changed
-
-    def delete(self):
-
-        changed = False
-
-        response, info = urls.fetch_url(url=self.url(),
-                                        module=self.module,
-                                        headers=self.headers,
-                                        method='delete')
-
-        self.module.log(msg="Code for DELETE request is: %s"
-                        % str(info['status']))
-
-        if info['status'] == 404:
-            return None, changed
-        elif info['status'] >= 300:
-            self.module.fail_json(msg='Failed to delete resource %s in \
-                                  namespace %s with msg %s'
-                                  % (name, namespace, info['body']))
-        self.module.log(msg="Response for DELETE request is: %s"
-                        % str(response))
-        changed = True
-        return self.module.from_json(response.read()), changed
-
 
 def main():
 
@@ -401,85 +390,74 @@ def main():
         argument_spec=dict(
             host=dict(required=False, type='str', default='127.0.0.1'),
             port=dict(required=False, type='int', default=8443),
-            inline=dict(required=False, type='dict'),
+            definition=dict(required=False,
+                            aliases=['def','inline'],
+                            type='dict'),
             kind=dict(required=False, type='str'),
             name=dict(required=False, type='str'),
             namespace=dict(required=False, type='str'),
             token=dict(required=True, type='str', no_log=True),
-            fieldSelector=dict(required=False, default='', type='str'),
             state=dict(required=True,
                        choices=['present', 'absent']),
             validate_certs=dict(required=False, type='bool', default='yes')
         ),
-        mutually_exclusive=(['kind', 'inline']),
+        mutually_exclusive=(['kind', 'definition'],
+                            ['name', 'definition'],
+                            ['namespace', 'definition']),
         required_if=([['state', 'absent', ['kind']]]),
-        required_one_of=([['kind', 'inline']]),
+        required_one_of=([['kind', 'definition']]),
         no_log=False,
         supports_check_mode=False
     )
     kind = None
-    inline = None
+    definition = None
     name = None
     namespace = None
 
     host = module.params['host']
     port = module.params['port']
-    inline = module.params['inline']
+    definition = module.params['definition']
     state = module.params['state']
     kind = module.params['kind']
-    fieldSelector = module.params['fieldSelector']
     name = module.params['name']
     namespace = module.params['namespace']
     token = module.params['token']
 
-    if inline is not None:
-        kind = inline['kind']
-        try:
-            if name is None:
-                name = inline['metadata']['name']
-            else:
-                inline['metadata']['name'] = name
-        except KeyError:
-            pass
+    if definition is None:
+        definition['metadata']['name'] = name
+        definition['metadata']['namespace'] = namespace
 
-        try:
-            if namespace is None:
-                namespace = inline['metadata']['namespace']
-            else:
-                inline['metadata']['namespace'] = namespace
-        except KeyError:
-            pass
+    if "apiVersion" not in definition.keys():
+        definition['apiVersion'] = 'v1'
+    if "kind" not in definition.keys():
+        definition['kind'] = kind
 
     result = None
-    oc = OC(token, host, port, module)
-    oc.build_facts()
+    oc = OC(module, token, host, port)
+    resource = NamedResource(module,
+                             definition,
+                             oc.get_resource_endpoint(definition['kind']))
+
     changed = False
     method = ''
+    exists = oc.exists(resource)
+    module.log(msg="URL %s" % resource.url())
 
-    resource = Resource(module=module,
-                        token=token,
-                        kinds=oc.kinds,
-                        kind=kind,
-                        namespace=namespace,
-                        name=name)
-
-    if state == 'present' and resource.exists() and inline is None:
-        result = resource.get(fieldSelector=fieldSelector)
-        method = 'get'
-    elif state == 'present' and resource.exists():
-        result, changed = resource.replace(inline=inline)
+    if state == 'present' and exists:
+        result, changed = oc.replace(resource)
         method = 'put'
-    elif state == 'present' and not resource.exists() and inline is not None:
-        result, changed = resource.create(inline=inline)
+    elif state == 'present' and not exists and definition is not None:
+        result, changed = oc.create(resource)
         method = 'create'
     elif state == 'absent' and resource.exists():
         result, changed = resource.delete()
         method = 'delete'
 
     facts = {}
+    module.log(msg="Result %s" % result)
 
     if result is not None and "items" in result:
-        result['item_list'] = result.pop('items')
+         result['item_list'] = result.pop('items')
     elif result is None and state == 'present':
         result = 'Resource not present and no inline provided.'
     facts['oc'] = {'result': result,
