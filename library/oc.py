@@ -314,7 +314,7 @@ class OC(object):
                                           data=str(named_resource))
 
             return response, changed
-        return str(named_resource), changed
+        return existing_definition, changed
 
     def connect(self, url, method, data=None):
         body = None
@@ -424,6 +424,8 @@ def main():
     token = module.params['token']
 
     if definition is None:
+        definition = {}
+        definition['metadata'] = {}
         definition['metadata']['name'] = name
         definition['metadata']['namespace'] = namespace
 
@@ -449,18 +451,17 @@ def main():
     elif state == 'present' and not exists and definition is not None:
         result, changed = oc.create(resource)
         method = 'create'
-    elif state == 'absent' and resource.exists():
-        result, changed = resource.delete()
+    elif state == 'absent' and exists:
+        result, changed = oc.delete(resource)
         method = 'delete'
 
     facts = {}
-    module.log(msg="Result %s" % result)
 
     if result is not None and "items" in result:
          result['item_list'] = result.pop('items')
     elif result is None and state == 'present':
         result = 'Resource not present and no inline provided.'
-    facts['oc'] = {'result': result,
+    facts['oc'] = {'definition': result,
                    'url': resource.url(),
                    'method': method}
 
