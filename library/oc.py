@@ -68,7 +68,7 @@ options:
     description:
       - "The namespace of the resource upon which to take action."
     required: false
-  toekn:
+  token:
     description:
       - "The token with which to authenticate agains the OpenShift cluster."
     required: true
@@ -98,7 +98,7 @@ EXAMPLES = """
         name: ansibletestproject
       displayName: Ansible Test Project
       description: This project was created using Ansible
-      token: << redacted >>
+    token: << redacted >>
 - name: Delete a service
   oc:
     state: absent
@@ -151,7 +151,7 @@ from ansible.module_utils.basic import AnsibleModule
 from ansible.module_utils.pycompat24 import get_exception
 from ansible.module_utils import urls
 from ansible.module_utils.six.moves.urllib.parse import urlencode
-import copy
+
 
 class ApiEndpoint(object):
     def __init__(self, host, port, api, version):
@@ -171,14 +171,16 @@ class ApiEndpoint(object):
         url += self.version
         return url
 
+
 class ResourceEndpoint(ApiEndpoint):
     def __init__(self, name, namespaced, api_endpoint):
-        super(self.__class__, self).__init__(api_endpoint.host,
-                                             api_endpoint.port,
-                                             api_endpoint.api,
-                                             api_endpoint.version)
+        super(ResourceEndpoint, self).__init__(api_endpoint.host,
+                                               api_endpoint.port,
+                                               api_endpoint.api,
+                                               api_endpoint.version)
         self.name = name
         self.namespaced = namespaced
+
 
 class NamedResource(object):
     def __init__(self, module, definition, resource_endpoint):
@@ -198,7 +200,7 @@ class NamedResource(object):
 
     def set_definition(self, definition):
         if isinstance(definition, str):
-            self.definition = self.module.from_json(response.read())
+            self.definition = self.module.from_json(definition)
         else:
             self.definition = definition
 
@@ -318,6 +320,7 @@ class OC(object):
 
     def connect(self, url, method, data=None):
         body = None
+        json_body = ""
         if data is not None:
             self.module.log(msg="Payload is %s" % data)
         response, info = urls.fetch_url(module=self.module,
@@ -333,8 +336,12 @@ class OC(object):
         self.module.log(msg="The URL, method, and code for " +
                             "connect is %s, %s, %d" %
                             (url, method, info['status']))
-
-        return self.module.from_json(body), info['status']
+        try:
+            json_body = self.module.from_json(body)
+        except TypeError:
+            self.module.fail_json(msg="Response from %s expected to be a " +
+                                  "expected string or buffer." % url)
+        return json_body, info['status']
 
     def get_resource_endpoint(self, kind):
         return self.kinds[kind]
@@ -391,7 +398,7 @@ def main():
             host=dict(required=False, type='str', default='127.0.0.1'),
             port=dict(required=False, type='int', default=8443),
             definition=dict(required=False,
-                            aliases=['def','inline'],
+                            aliases=['def', 'inline'],
                             type='dict'),
             kind=dict(required=False, type='str'),
             name=dict(required=False, type='str'),
@@ -458,7 +465,7 @@ def main():
     facts = {}
 
     if result is not None and "items" in result:
-         result['item_list'] = result.pop('items')
+        result['item_list'] = result.pop('items')
     elif result is None and state == 'present':
         result = 'Resource not present and no inline provided.'
     facts['oc'] = {'definition': result,
