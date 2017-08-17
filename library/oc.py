@@ -1,22 +1,11 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 # (c) 2017, Kenneth D. Evensen <kevensen@redhat.com>
-#
-# This file is part of Ansible
-#
-# Ansible is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# Ansible is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with Ansible.  If not, see <http://www.gnu.org/licenses/>.
 
+# GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
+
+from __future__ import (absolute_import, division, print_function)
+__metaclass__ = type
 
 ANSIBLE_METADATA = {'metadata_version': '1.0',
                     'status': ['preview'],
@@ -148,9 +137,7 @@ method:
 '''
 
 from ansible.module_utils.basic import AnsibleModule
-from ansible.module_utils.pycompat24 import get_exception
 from ansible.module_utils import urls
-from ansible.module_utils.six.moves.urllib.parse import urlencode
 
 
 class ApiEndpoint(object):
@@ -333,14 +320,20 @@ class OC(object):
         if info['status'] >= 300:
             body = info['body']
 
-        self.module.log(msg="The URL, method, and code for " +
-                            "connect is %s, %s, %d" %
-                            (url, method, info['status']))
+        message = "The URL, method, and code for connect is %s, %s, %d." % (url, method, info['status'])
+        if info['status'] == 401:
+            self.module.fail_json(msg=message + "  Unauthorized.  Check that you have a valid serivce account and token.")
+
+        self.module.log(msg=message)
+
         try:
             json_body = self.module.from_json(body)
         except TypeError:
             self.module.fail_json(msg="Response from %s expected to be a " +
                                   "expected string or buffer." % url)
+        except ValueError:
+            return body, info['status']
+
         return json_body, info['status']
 
     def get_resource_endpoint(self, kind):
@@ -395,18 +388,17 @@ def main():
 
     module = AnsibleModule(
         argument_spec=dict(
-            host=dict(required=False, type='str', default='127.0.0.1'),
-            port=dict(required=False, type='int', default=8443),
-            definition=dict(required=False,
-                            aliases=['def', 'inline'],
+            host=dict(type='str', default='127.0.0.1'),
+            port=dict(type='int', default=8443),
+            definition=dict(aliases=['def', 'inline'],
                             type='dict'),
-            kind=dict(required=False, type='str'),
-            name=dict(required=False, type='str'),
-            namespace=dict(required=False, type='str'),
+            kind=dict(type='str'),
+            name=dict(type='str'),
+            namespace=dict(type='str'),
             token=dict(required=True, type='str', no_log=True),
             state=dict(required=True,
                        choices=['present', 'absent']),
-            validate_certs=dict(required=False, type='bool', default='yes')
+            validate_certs=dict(type='bool', default='yes')
         ),
         mutually_exclusive=(['kind', 'definition'],
                             ['name', 'definition'],
