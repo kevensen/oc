@@ -324,7 +324,7 @@ class OC(object):
         if info['status'] == 401:
             self.module.fail_json(msg=message + "  Unauthorized.  Check that you have a valid serivce account and token.")
 
-        self.module.log(msg=message)
+        self.module.fail_json(msg=message)
 
         try:
             json_body = self.module.from_json(body)
