@@ -382,8 +382,8 @@ def main():
 
     module = AnsibleModule(
         argument_spec=dict(
-            host=dict(type='str', default='127.0.0.1'),
-            port=dict(type='int', default=8443),
+            apihost=dict(type='str', default='127.0.0.1'),
+            apiport=dict(type='int', default=8443),
             definition=dict(aliases=['def', 'inline'],
                             type='dict'),
             kind=dict(type='str'),
@@ -391,13 +391,14 @@ def main():
             namespace=dict(type='str'),
             token=dict(required=True, type='str', no_log=True),
             state=dict(required=True,
-                       choices=['present', 'absent']),
+                       choices=['present', 'absent', 'describe']),
             validate_certs=dict(type='bool', default='yes')
         ),
         mutually_exclusive=(['kind', 'definition'],
                             ['name', 'definition'],
                             ['namespace', 'definition']),
-        required_if=([['state', 'absent', ['kind']]]),
+        required_if=([['state', 'absent', ['kind']],
+                      ['state', 'describe', ['kind']]]),
         required_one_of=([['kind', 'definition']]),
         no_log=False,
         supports_check_mode=True
@@ -407,8 +408,8 @@ def main():
     name = None
     namespace = None
 
-    host = module.params['host']
-    port = module.params['port']
+    host = module.params['apihost']
+    port = module.params['apiport']
     definition = module.params['definition']
     state = module.params['state']
     kind = module.params['kind']
@@ -455,6 +456,9 @@ def main():
         else:
             changed = True
             result = definition
+    elif state == 'describe' and exists:
+        method = 'describe'
+        result, changed = oc.get(resource)
 
     facts = {}
 
